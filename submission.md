@@ -76,3 +76,69 @@ The original sharer can later call `GET /users/<user_id>/notifications` — hand
 7. A client can verify the current streak via `GET /users/<user_id>/streak` → `routes/users.py` → `streak_service.get_streak`, which returns `user.listening_streak` directly.
 
 ---
+
+### Architecture Diagram
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                           ROUTES                                 │
+│          /songs     /playlists     /users     /feed              │
+└───────────────────────────┬──────────────────────────────────────┘
+                            │ delegates to
+┌───────────────────────────▼──────────────────────────────────────┐
+│                          SERVICES                                │
+│    notification_service    streak_service    feed_service        │
+│    playlist_service        search_service                        │
+└───────────────────────────┬──────────────────────────────────────┘
+                            │ queries via SQLAlchemy ORM
+┌───────────────────────────▼──────────────────────────────────────┐
+│                          MODELS                                  │
+│                                                                  │
+│  ┌─────────────────┐  M:M (friendships)  ┌─────────────────┐   │
+│  │      User       │◄───────────────────►│      User       │   │
+│  │─────────────────│                     └─────────────────┘   │
+│  │ id              │                                            │
+│  │ username        │──────────────────────────────────────┐    │
+│  │ email           │ 1:M                    1:M            │    │
+│  │ listening_streak│                                       │    │
+│  │ last_listened_at│                                       │    │
+│  └──┬──────┬───┬───┘                                       │    │
+│     │1:M   │1:M│1:M                                        │    │
+│     │      │   │                                           │    │
+│  ┌──▼───┐  │  ┌▼──────────────────┐  M:M (song_tags)      │    │
+│  │Rating│  │  │       Song        │◄────────────────►┌────┐│   │
+│  │──────│  │  │───────────────────│                  │Tag ││   │
+│  │score │  │  │ id, title, artist │                  └────┘│   │
+│  │(1-5) │  │  │ genre, shared_by──┼──────────────────────  │   │
+│  └──────┘  │  └──────────┬────────┘                        │   │
+│            │             │ 1:M                              │   │
+│  ┌─────────▼───┐   ┌─────▼────────────────────────────┐   │   │
+│  │Listening    │   │       playlist_entries            │   │   │
+│  │Event        │   │──────────────────────────────────│   │   │
+│  │─────────────│   │ playlist_id (FK)  song_id (FK)   │   │   │
+│  │ user_id     │   │ position          added_by (FK)  │   │   │
+│  │ song_id     │   │ added_at                         │   │   │
+│  │ listened_at │   └──────────────┬───────────────────┘   │   │
+│  └─────────────┘                  │ M:1                    │   │
+│                          ┌────────▼────────┐               │   │
+│  ┌─────────────────────┐ │    Playlist     │◄──────────────┘   │
+│  │    Notification     │ │─────────────────│  1:M (created_by) │
+│  │─────────────────────│ │ id, name        │                   │
+│  │ user_id ◄───────────┼─┤ created_by      │                   │
+│  │ notification_type   │ │ is_collaborative│                   │
+│  │ body, read          │ └─────────────────┘                   │
+│  └─────────────────────┘                                       │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+
+
+## Bug Fixes
+
+*(Root cause analysis entries will be added here as bugs are fixed.)*
+
+---
+
+*Branch: `bugfix/mixtape`*
