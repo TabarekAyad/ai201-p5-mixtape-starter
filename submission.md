@@ -133,7 +133,19 @@ The original sharer can later call `GET /users/<user_id>/notifications` — hand
 
 ---
 
+### Patterns Noticed
 
+**Routes are pure HTTP adapters.** Every route handler does three things only: extract inputs from `request.json` or URL params, call one service function, return a JSON response. All validation and business logic lives in services. The one exception is `GET /users/<user_id>`, which does a direct `db.session.get` in the route — the only place in the codebase where a route touches the ORM directly.
+
+**`notification_service` is the cross-cutting service.** It is the only service module imported by more than one route file (`routes/playlists.py` and `routes/songs.py` both import from it). This is because both playlist additions and song ratings are actions that create notifications, so the notification side-effects are bundled into the same service functions that perform the underlying writes.
+
+**Association tables with extra columns are handled inconsistently.** `playlist_entries` has `position` and `added_by` columns that the ORM `relationship` cannot populate via a simple `.append()`. The seed data bypasses the ORM and inserts rows directly with `db.session.execute(playlist_entries.insert(), {...})`. The service layer does not follow this pattern, which is the root cause of bugs involving playlist entries.
+
+**UUIDs everywhere.** Every model generates its own UUID primary key via `default=generate_uuid`. There are no auto-increment integers in the schema. This means IDs must be provided or retrieved — you cannot guess them.
+
+**All times are UTC.** `datetime.utcnow` is used throughout for defaults and comparisons. The streak and feed logic both depend on UTC-aware datetime arithmetic. Any confusion between naive and aware datetimes (or between UTC calendar days and local calendar days) surfaces as a bug.
+
+---
 
 ## Bug Fixes
 
