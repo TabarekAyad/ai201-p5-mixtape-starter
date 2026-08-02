@@ -50,3 +50,29 @@ I used Claude Code (claude-sonnet-4-6) throughout this project. During the codeb
 **`tests/`** — Three test modules: `test_playlists.py`, `test_search.py`, `test_streaks.py`. Each uses an in-memory SQLite database via the `config` override in `create_app`.
 
 ---
+
+### Data Flow: Adding a Song to a Playlist (and triggering a notification)
+
+1. Client sends `POST /playlists/<playlist_id>/songs` with JSON `{"song_id": "...", "added_by": "<user_id>"}`.
+2. `routes/playlists.py` extracts both values and calls `notification_service.add_to_playlist(playlist_id, song_id, added_by_user_id)`.
+3. `add_to_playlist` validates that the song, the adding user, and the playlist all exist via `db.session.get`. If any lookup fails, it raises a `ValueError` which the route catches and returns as a 400.
+4. It checks whether the song is already in `playlist.songs`. If not, it appends the song and commits.
+5. It then checks `song.shared_by != added_by_user_id`. If true (someone other than the original sharer is adding the song), it calls `create_notification(song.shared_by, "song_added_to_playlist", "kenji added your song 'Neon City' to the playlist 'Friday Energy'.")`.
+6. `create_notification` constructs a `Notification` row, calls `db.session.add` and `db.session.commit`, and returns the instance.
+7. The route returns `{"message": "Song added to playlist"}` with status 201.
+
+The original sharer can later call `GET /users/<user_id>/notifications` — handled by `routes/users.py` → `notification_service.get_notifications` — to see the notification in their inbox.
+
+---
+
+### Data Flow: Recording a Listen and Updating the Streak
+
+1. Client sends `POST /songs/<song_id>/listen` with JSON `{"user_id": "..."}`.
+2. `routes/songs.py` calls `streak_service.record_listening_event(user_id, song_id)`.
+3. `record_listening_event` creates a `ListeningEvent` row (not yet committed), then immediately calls `update_listening_streak(user, now)`.
+4. `update_listening_streak` reads `user.last_listened_at` and computes `days_since_last` as a calendar-day difference. Based on that value it either sets the streak to 1 (first listen or gap), leaves it unchanged (already listened today), or increments it (consecutive day).
+5. Back in `record_listening_event`, `db.session.commit()` persists both the new event and the updated streak in one transaction.
+6. The route returns the `ListeningEvent` dict with status 201.
+7. A client can verify the current streak via `GET /users/<user_id>/streak` → `routes/users.py` → `streak_service.get_streak`, which returns `user.listening_streak` directly.
+
+---
