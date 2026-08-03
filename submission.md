@@ -149,7 +149,48 @@ The original sharer can later call `GET /users/<user_id>/notifications` — hand
 
 ## Bug Fixes
 
-*(Root cause analysis entries will be added here as bugs are fixed.)*
+---
+
+### Issue #1 — My listening streak keeps resetting
+
+**1. How I reproduced it**
+
+The seed data sets kenji's `last_listened_at` to 3 hours ago (today), which does not trigger the bug because same-day listens are a no-op in the streak logic. To match the reported condition — listening on Saturday then checking Sunday morning — I manually set kenji's `last_listened_at` to the previous day (Saturday 2026-08-01) and reset his streak to 12:
+
+```powershell
+.venv\Scripts\python.exe -c "import sqlite3; conn = sqlite3.connect('instance/mixtape.db'); conn.execute(\"UPDATE user SET last_listened_at = '2026-08-01 12:00:00', listening_streak = 12 WHERE username = 'kenji'\"); conn.commit()"
+```
+
+Confirmed starting state (streak = 12):
+```
+GET /users/f9d033d8-34ed-4f9c-a102-eeaacbb64094/streak
+→ {"streak": 12, "user_id": "f9d033d8-34ed-4f9c-a102-eeaacbb64094"}
+```
+
+Recorded a listen on Sunday (today):
+```
+POST /songs/<song_id>/listen   {"user_id": "f9d033d8-34ed-4f9c-a102-eeaacbb64094"}
+```
+
+Checked streak again:
+```
+GET /users/f9d033d8-34ed-4f9c-a102-eeaacbb64094/streak
+→ {"streak": 1}   ← expected 13
+```
+
+Bug confirmed: listening on a Sunday after a Saturday resets the streak to 1 instead of incrementing it.
+
+**2. How I found the root cause**
+
+*(To be completed in Milestone 3.)*
+
+**3. The root cause**
+
+*(To be completed in Milestone 3.)*
+
+**4. Fix and side-effect check**
+
+*(To be completed in Milestone 3.)*
 
 ---
 
