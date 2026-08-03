@@ -155,10 +155,19 @@ The original sharer can later call `GET /users/<user_id>/notifications` — hand
 
 **1. How I reproduced it**
 
-The seed data sets kenji's `last_listened_at` to 3 hours ago (today), which does not trigger the bug because same-day listens are a no-op in the streak logic. To match the reported condition — listening on Saturday then checking Sunday morning — I manually set kenji's `last_listened_at` to the previous day (Saturday 2026-08-01) and reset his streak to 12:
+The seed data sets kenji's `last_listened_at` to 3 hours ago (today), which does not trigger the bug because same-day listens are a no-op in the streak logic. To match the reported condition — listening on Saturday then checking Sunday morning — I manually set kenji's `last_listened_at` to the previous day (Saturday 2026-08-01) and reset his streak to 12 by running `tmp_update.py`:
+
+```python
+# tmp_update.py
+import sqlite3
+conn = sqlite3.connect('instance/mixtape.db')
+conn.execute("UPDATE user SET last_listened_at = '2026-08-01 12:00:00', listening_streak = 12 WHERE username = 'kenji'")
+conn.commit()
+print('done')
+```
 
 ```powershell
-.venv\Scripts\python.exe -c "import sqlite3; conn = sqlite3.connect('instance/mixtape.db'); conn.execute(\"UPDATE user SET last_listened_at = '2026-08-01 12:00:00', listening_streak = 12 WHERE username = 'kenji'\"); conn.commit()"
+python tmp_update.py
 ```
 
 Confirmed starting state (streak = 12):
@@ -179,6 +188,43 @@ GET /users/f9d033d8-34ed-4f9c-a102-eeaacbb64094/streak
 ```
 
 Bug confirmed: listening on a Sunday after a Saturday resets the streak to 1 instead of incrementing it.
+
+**2. How I found the root cause**
+
+*(To be completed in Milestone 3.)*
+
+**3. The root cause**
+
+*(To be completed in Milestone 3.)*
+
+**4. Fix and side-effect check**
+
+*(To be completed in Milestone 3.)*
+
+---
+
+### Issue #3 — The same song keeps showing up twice in search
+
+**1. How I reproduced it**
+
+No database setup required. I searched for "Anthem":
+
+```
+GET http://127.0.0.1:5000/songs/search?q=Anthem
+```
+
+```powershell
+(Invoke-WebRequest "http://127.0.0.1:5000/songs/search?q=Anthem").Content | python -m json.tool
+```
+
+The endpoint returned **1 result** for Crown Heights Anthem — not 3 as the issue report described. Investigation revealed why: the bug is real at the SQL level but masked at the Python level by SQLAlchemy 2.0.
+
+`search_service.py` uses an `outerjoin` on `song_tags` without `.distinct()`. The underlying SQL produces 3 rows for "Crown Heights Anthem" (one per tag: `rap`, `hip-hop`, `boom bap`). However, SQLAlchemy 2.0's legacy `Query` API (`db.session.query(Song)`) automatically deduplicates ORM entity results by primary key before returning — all 3 rows share the same `song.id`, so `.all()` hands back a list with 1 `Song` object instead of 3.
+
+The test comment at `tests/test_search.py` says `# Should be 1, bug causes it to be 3` — that comment was written for SQLAlchemy 1.x behavior where `.all()` would return 3 identical references. With SQLAlchemy 2.0 the ORM masks the bug at the Python level, so the test passes vacuously. The underlying SQL is still wrong and would produce duplicates in any context that bypasses the ORM deduplication (raw SQL, different SQLAlchemy versions, or certain query patterns).
+
+**Expected:** each matching song appears exactly once, and the SQL query produces exactly one row per song.  
+**Actual:** the API response is correct by accident — SQLAlchemy 2.0 silently collapses the duplicate rows the bad `outerjoin` produces.
 
 **2. How I found the root cause**
 
