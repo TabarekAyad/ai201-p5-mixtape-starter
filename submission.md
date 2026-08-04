@@ -240,4 +240,74 @@ The test comment at `tests/test_search.py` says `# Should be 1, bug causes it to
 
 ---
 
+### Issue #5 — The last song in a playlist never shows up
+
+**1. How I reproduced it**
+
+No manual database setup was needed — the seed data is sufficient. The "Friday Energy" playlist is seeded with 7 songs (`all_songs[3:10]` in `seed_data.py`).
+
+Retrieved the playlist and user IDs using Flask shell:
+
+```python
+from models import User, Playlist
+for u in User.query.all():
+    print(u.id, u.username)
+for p in Playlist.query.all():
+    print(p.id, p.name)
+```
+
+Then fetched the playlist songs:
+
+```
+GET http://127.0.0.1:5000/playlists/437c6ebc-ea8f-4037-a1cb-4727e918c096/songs
+```
+
+Response:
+
+```json
+{"count": 6, "songs": [...]}
+```
+
+**Expected:** `"count": 7` — the seed inserted 7 songs into Friday Energy.  
+**Actual:** `"count": 6` — the most recently added song (highest `position`) is always missing.
+
+To confirm the "sliding" behavior, I tried `POST /playlists/<playlist_id>/songs` to add a new song, but it returned a 500 error. The cause: `notification_service.add_to_playlist` uses `playlist.songs.append(song)` through the ORM relationship, but the `playlist_entries` association table has two `NOT NULL` columns without defaults (`position` and `added_by`) that the ORM cannot populate via `.append()`. This is the same reason the seed data bypasses the ORM entirely and inserts rows with `db.session.execute(playlist_entries.insert().values(...))`.
+
+To work around this, I added "After Hours" directly to the database using the same pattern as the seed:
+
+```python
+import sqlite3
+from datetime import datetime, timezone
+
+PLAYLIST_ID = "437c6ebc-ea8f-4037-a1cb-4727e918c096"  # Friday Energy
+SONG_ID     = "b5719902-c390-47dd-826f-4b551f53b1ff"  # After Hours
+ADDED_BY    = "fe7b8832-7b2d-4766-a9f5-ca592c0d2ac9"  # darius
+
+conn = sqlite3.connect("instance/mixtape.db")
+max_pos = conn.execute(
+    "SELECT MAX(position) FROM playlist_entries WHERE playlist_id = ?", (PLAYLIST_ID,)
+).fetchone()[0]
+conn.execute(
+    "INSERT INTO playlist_entries (playlist_id, song_id, position, added_by, added_at) VALUES (?, ?, ?, ?, ?)",
+    (PLAYLIST_ID, SONG_ID, max_pos + 1, ADDED_BY, datetime.now(timezone.utc).isoformat())
+)
+conn.commit()
+```
+
+The database now had 8 songs in Friday Energy. Re-fetching the endpoint returned `"count": 7` — "Harlem Renaissance" (previously missing at pos 7) now appeared, and "After Hours" (pos 8) became the new missing song. That confirmed the sliding behavior exactly as darius described.
+
+**2. How I found the root cause**
+
+*(To be completed in Milestone 3.)*
+
+**3. The root cause**
+
+*(To be completed in Milestone 3.)*
+
+**4. Fix and side-effect check**
+
+*(To be completed in Milestone 3.)*
+
+---
+
 *Branch: `bugfix/mixtape`*
