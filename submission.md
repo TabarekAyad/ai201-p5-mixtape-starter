@@ -250,14 +250,24 @@ GET http://127.0.0.1:5000/songs/search?q=Anthem
 (Invoke-WebRequest "http://127.0.0.1:5000/songs/search?q=Anthem").Content | python -m json.tool
 ```
 
-The endpoint returned **1 result** for Crown Heights Anthem — not 3 as the issue report described. Investigation revealed why: the bug is real at the SQL level but masked at the Python level by SQLAlchemy 2.0.
+The endpoint returned **1 result** for Crown Heights Anthem. To confirm the duplication exists at the SQL level, I ran the query manually joining through to `Tag` so SQLAlchemy returns raw tuples instead of ORM entities:
 
-`search_service.py` uses an `outerjoin` on `song_tags` without `.distinct()`. The underlying SQL produces 3 rows for "Crown Heights Anthem" (one per tag: `rap`, `hip-hop`, `boom bap`). However, SQLAlchemy 2.0's legacy `Query` API (`db.session.query(Song)`) automatically deduplicates ORM entity results by primary key before returning — all 3 rows share the same `song.id`, so `.all()` hands back a list with 1 `Song` object instead of 3.
+```powershell
+.\.venv\Scripts\python.exe -c "from app import create_app, db; from models import Song, Tag, song_tags; app=create_app(); ctx=app.app_context(); ctx.push(); rows=db.session.query(Song.title, Song.artist, Tag.name).outerjoin(song_tags, Song.id == song_tags.c.song_id).outerjoin(Tag, Tag.id == song_tags.c.tag_id).filter(Song.title.ilike('%Anthem%')).all(); print(len(rows)); print(rows); ctx.pop()"
+```
 
-The test comment at `tests/test_search.py` says `# Should be 1, bug causes it to be 3` — that comment was written for SQLAlchemy 1.x behavior where `.all()` would return 3 identical references. With SQLAlchemy 2.0 the ORM masks the bug at the Python level, so the test passes vacuously. The underlying SQL is still wrong and would produce duplicates in any context that bypasses the ORM deduplication (raw SQL, different SQLAlchemy versions, or certain query patterns).
+Output:
+```
+3
+[('Crown Heights Anthem', 'Borough Kings', 'boom bap'), ('Crown Heights Anthem', 'Borough Kings', 'rap'), ('Crown Heights Anthem', 'Borough Kings', 'hip-hop')]
+```
+
+The underlying SQL produces **3 rows** — one per tag — for a single song with 3 tags.
+
+**Important wrinkle:** with the dependencies in this checkout (SQLAlchemy 2.0.51 / Flask-SQLAlchemy 3.1.1), `db.session.query(Song).all()` deduplicates ORM `Song` entities by primary key before returning, so the HTTP response shows only 1 result. The duplicate bug is visible at the SQL/query-row level but masked in the HTTP response. The reproducing condition is: search for a title/artist match where that song has more than one tag. The test comment at [tests/test_search.py:104](tests/test_search.py#L104) (`# Should be 1, bug causes it to be 3`) was written for SQLAlchemy 1.x behavior where `.all()` returned 3 identical references; under 2.0 the test passes vacuously.
 
 **Expected:** each matching song appears exactly once, and the SQL query produces exactly one row per song.  
-**Actual:** the API response is correct by accident — SQLAlchemy 2.0 silently collapses the duplicate rows the bad `outerjoin` produces.
+**Actual:** the HTTP response is correct by accident — SQLAlchemy 2.0 silently collapses the duplicate rows the bad `outerjoin` produces. The underlying SQL is still wrong and would produce duplicates in any context that bypasses ORM deduplication (raw SQL, SQLAlchemy 1.x, certain query patterns).
 
 **2. How I found the root cause**
 
