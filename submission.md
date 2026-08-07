@@ -271,15 +271,44 @@ The underlying SQL produces **3 rows** — one per tag — for a single song wit
 
 **2. How I found the root cause**
 
-*(To be completed in Milestone 3.)*
+I opened [services/search_service.py](services/search_service.py) — the only file the architecture map names as owning search logic. `search_songs` joins `Song` onto `song_tags` but never selects or filters on any tag column. That made the join immediately suspicious: it adds nothing to the filter but does multiply rows. Running the diagnostic command confirmed exactly 3 rows for a song with 3 tags, one row per tag.
 
 **3. The root cause**
 
-*(To be completed in Milestone 3.)*
+The `.outerjoin(song_tags, Song.id == song_tags.c.song_id)` at [services/search_service.py:27](services/search_service.py#L27) causes the database to expand each song into one row per associated tag before applying the `ILIKE` filter. A song with N tags produces N matching rows. SQLAlchemy 2.0's `Query` API collapses these back to 1 `Song` object via primary-key deduplication, so the bug is invisible at the HTTP level in this checkout — but it is real at the SQL level and would surface in SQLAlchemy 1.x or any raw SQL context.
 
 **4. Fix and side-effect check**
 
-*(To be completed in Milestone 3.)*
+Added `.distinct()` to the query so the database collapses duplicate rows before SQLAlchemy maps them:
+
+```python
+results = (
+    db.session.query(Song)
+    .outerjoin(song_tags, Song.id == song_tags.c.song_id)
+    .filter(
+        db.or_(
+            Song.title.ilike(f"%{query}%"),
+            Song.artist.ilike(f"%{query}%"),
+        )
+    )
+    .distinct()
+    .all()
+)
+```
+
+This is compatible with both SQLite and Postgres. Verified with:
+
+```powershell
+.\.venv\Scripts\python.exe -c "from app import create_app, db; from models import Song, song_tags; app=create_app(); ctx=app.app_context(); ctx.push(); rows=db.session.query(Song).outerjoin(song_tags, Song.id == song_tags.c.song_id).filter(Song.title.ilike('%Anthem%')).distinct().all(); print(len(rows)); print([(s.title, s.artist, [t.name for t in s.tags]) for s in rows]); ctx.pop()"
+```
+
+Output:
+```
+1
+[('Crown Heights Anthem', 'Borough Kings', ['rap', 'hip-hop', 'boom bap'])]
+```
+
+One result, all 3 tags intact. `song.to_dict()` continues to load tags via the ORM relationship — `.distinct()` does not affect that. No other code paths call `search_songs` or touch the `song_tags` join in this service.
 
 ---
 
