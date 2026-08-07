@@ -155,51 +155,84 @@ The original sharer can later call `GET /users/<user_id>/notifications` — hand
 
 **1. How I reproduced it**
 
-The seed data sets kenji's `last_listened_at` to 3 hours ago (today), which does not trigger the bug because same-day listens are a no-op in the streak logic. To match the reported condition — listening on Saturday then checking Sunday morning — I manually set kenji's `last_listened_at` to the previous day (Saturday 2026-08-01) and reset his streak to 12 by running `tmp_update.py`:
+The seed data sets kenji's `last_listened_at` to 3 hours ago (today), which does not trigger the bug because same-day listens are a no-op in the streak logic. The bug only fires on a Sunday, and today is Thursday 2026-08-06, so a live HTTP call would never reach the Sunday branch. To match the reported condition — listening on Saturday then recording on Sunday — I froze the clock at Sunday 2026-08-02 using `unittest.mock.patch` and drove the service directly.
+
+`tmp_repro.py` does three things: resets kenji's state to streak=12 / last_listened_at=2026-08-01 (Saturday) via the ORM, patches `datetime.now` inside `services.streak_service` to return a fixed Sunday datetime (2026-08-02 12:00 UTC), then calls `record_listening_event` through the real service code:
 
 ```python
-# tmp_update.py
-import sqlite3
-conn = sqlite3.connect('instance/mixtape.db')
-conn.execute("UPDATE user SET last_listened_at = '2026-08-01 12:00:00', listening_streak = 12 WHERE username = 'kenji'")
-conn.commit()
-print('done')
+# tmp_repro.py
+from unittest.mock import patch, MagicMock
+from datetime import datetime, timezone
+
+SUNDAY = datetime(2026, 8, 2, 12, 0, 0, tzinfo=timezone.utc)
+
+from app import create_app
+from models import User
+from app import db
+
+app = create_app()
+
+with app.app_context():
+    kenji = db.session.query(User).filter_by(username='kenji').first()
+    kenji.listening_streak = 12
+    kenji.last_listened_at = datetime(2026, 8, 1, 12, 0, 0, tzinfo=timezone.utc)
+    db.session.commit()
+    print(f"Starting state: streak={kenji.listening_streak}, last_listened_at={kenji.last_listened_at.date()}")
+
+    mock_dt = MagicMock(wraps=datetime)
+    mock_dt.now.return_value = SUNDAY
+
+    with patch('services.streak_service.datetime', mock_dt):
+        from services import streak_service
+        streak_service.record_listening_event(kenji.id, '290f46f8-5414-4de8-a588-4568a10cab7f')
+
+    db.session.refresh(kenji)
+    print(f"After Sunday listen: streak={kenji.listening_streak}  (expected 13)")
 ```
 
 ```powershell
-python tmp_update.py
+python tmp_repro.py
 ```
 
-Confirmed starting state (streak = 12):
+Output:
 ```
-GET /users/f9d033d8-34ed-4f9c-a102-eeaacbb64094/streak
-→ {"streak": 12, "user_id": "f9d033d8-34ed-4f9c-a102-eeaacbb64094"}
-```
-
-Recorded a listen on Sunday (today):
-```
-POST /songs/<song_id>/listen   {"user_id": "f9d033d8-34ed-4f9c-a102-eeaacbb64094"}
+Starting state: streak=12, last_listened_at=2026-08-01
+After Sunday listen: streak=1  (expected 13)
 ```
 
-Checked streak again:
-```
-GET /users/f9d033d8-34ed-4f9c-a102-eeaacbb64094/streak
-→ {"streak": 1}   ← expected 13
-```
-
-Bug confirmed: listening on a Sunday after a Saturday resets the streak to 1 instead of incrementing it.
+Bug confirmed: with the clock frozen at Sunday 2026-08-02, recording a listen after a Saturday sets the streak to 1 instead of 13.
 
 **2. How I found the root cause**
 
-*(To be completed in Milestone 3.)*
+I opened [services/streak_service.py](services/streak_service.py) because the architecture map names it as the only file that owns streak logic. I read `update_listening_streak` top to bottom. The function computes `days_since_last` and branches on it. The branch that should increment the streak caught my eye immediately:
+
+```python
+elif days_since_last == 1 and today.weekday() != 6:
+```
+
+`datetime.date.weekday()` returns 0–6 (Monday=0, Sunday=6). The extra guard `!= 6` means "and today is not Sunday." That was the moment of confidence — on a Saturday → Sunday listen, `days_since_last == 1` is True but `today.weekday() != 6` is False, so the condition fails and falls through to `else`, which resets the streak to 1. The weekday check has no place in streak logic at all.
 
 **3. The root cause**
 
-*(To be completed in Milestone 3.)*
+`datetime.date.weekday()` returns 6 for Sunday. The `elif` at [services/streak_service.py:73](services/streak_service.py#L73) was:
+
+```python
+elif days_since_last == 1 and today.weekday() != 6:
+    user.listening_streak += 1
+```
+
+The streak rule is purely about consecutive calendar days — the day of the week is irrelevant. The extra guard `and today.weekday() != 6` made Sunday the one day of the week where a consecutive-day listen was silently blocked. When `days_since_last == 1` and today is Sunday (weekday == 6), the condition evaluated to `False`, bypassed the increment, and fell through to `else: user.listening_streak = 1`, resetting the streak to 1 instead of incrementing it.
 
 **4. Fix and side-effect check**
 
-*(To be completed in Milestone 3.)*
+Removed `and today.weekday() != 6` from the condition:
+
+```python
+elif days_since_last == 1:
+    user.listening_streak += 1
+```
+
+Verified with `tmp_repro.py` — clock frozen at Sunday 2026-08-02, last listened Saturday 2026-08-01, streak started at 12. After the fix, streak correctly incremented to 13. The `days_since_last == 0` (same-day no-op) and `else` (gap reset) branches are structurally unchanged. No other code in the project calls `weekday()` on a date, so there are no side effects outside this function.
 
 ---
 
