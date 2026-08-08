@@ -406,3 +406,7 @@ Boundary cases: an empty playlist (`songs = []`) was never broken — `[][:-1]` 
 ---
 
 *Branch: `bugfix/mixtape`*
+
+## Commit History
+
+![git log --oneline](git_log_online.png)
