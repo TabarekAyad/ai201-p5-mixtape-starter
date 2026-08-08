@@ -341,11 +341,9 @@ Response:
 ```
 
 **Expected:** `"count": 7` — the seed inserted 7 songs into Friday Energy.  
-**Actual:** `"count": 6` — the most recently added song (highest `position`) is always missing.
+**Actual:** `"count": 6` — the most recently added song (highest `position`) is always missing. This alone confirmed issue #5 is reproducible. The source of the drop is `get_playlist_songs` in [services/playlist_service.py:66](services/playlist_service.py#L66), which returns `songs[:-1]` instead of `songs`, silently discarding the last element of the ordered list before returning.
 
-To confirm the "sliding" behavior, I tried `POST /playlists/<playlist_id>/songs` to add a new song, but it returned a 500 error. The cause: `notification_service.add_to_playlist` uses `playlist.songs.append(song)` through the ORM relationship, but the `playlist_entries` association table has two `NOT NULL` columns without defaults (`position` and `added_by`) that the ORM cannot populate via `.append()`. This is the same reason the seed data bypasses the ORM entirely and inserts rows with `db.session.execute(playlist_entries.insert().values(...))`.
-
-To work around this, I added "After Hours" directly to the database using the same pattern as the seed:
+To further confirm the sliding behavior darius described — that adding a new song shifts which one is missing — I tried `POST /playlists/<playlist_id>/songs`. This hit a separate bug that blocked the reproduction path: `notification_service.add_to_playlist` appends the song via `playlist.songs.append(song)`, but the `playlist_entries` association table has two `NOT NULL` columns without defaults (`position` and `added_by`) that the ORM cannot populate via `.append()`. The endpoint returned a 500 error. To get around that blocker, I added "After Hours" directly to the database using the same pattern as the seed:
 
 ```python
 import sqlite3
