@@ -368,15 +368,35 @@ The database now had 8 songs in Friday Energy. Re-fetching the endpoint returned
 
 **2. How I found the root cause**
 
-*(To be completed in Milestone 3.)*
+I opened [services/playlist_service.py](services/playlist_service.py) — the only file the architecture map names as owning playlist retrieval logic. I read `get_playlist_songs` top to bottom. The query is correct: it joins `Song` onto `playlist_entries`, filters by `playlist_id`, and orders by `position ASC`. The return statement was the smoking gun:
+
+```python
+return [song.to_dict() for song in songs[:-1]]
+```
+
+`[:-1]` on a list drops the last element. There is no reason to do that here — the query already returns the right set in the right order. That single slice explained the exact symptom: the song at the highest position is always missing, and adding a new song shifts which one disappears.
 
 **3. The root cause**
 
-*(To be completed in Milestone 3.)*
+Python's slice `songs[:-1]` returns every element except the last one. After the query returns songs ordered by `position ASC`, the last element is the song with the highest position value — the most recently added entry. `[:-1]` silently discards it before the list comprehension converts the results to dicts. For a playlist with N songs the response always contains N−1. When a new song is added at a new max position, the previously-last song appears (it is now second-to-last) while the new song becomes the next missing one — the sliding behavior darius described.
 
 **4. Fix and side-effect check**
 
-*(To be completed in Milestone 3.)*
+Changed line 66 of [services/playlist_service.py](services/playlist_service.py#L66):
+
+```python
+# before
+return [song.to_dict() for song in songs[:-1]]
+
+# after
+return [song.to_dict() for song in songs]
+```
+
+The query itself was correct; only the slice needed to be removed.
+
+Verified with all three playlist tests — all pass. Checked `notification_service.add_to_playlist`, which imports `get_playlist_songs` but never calls it (it uses the ORM relationship `playlist.songs` directly for the membership check). The fix has no effect on the add path.
+
+Boundary cases: an empty playlist (`songs = []`) was never broken — `[][:-1]` also returns `[]` — confirmed by `test_empty_playlist_returns_empty_list`. The most severely affected case was a 1-song playlist, where `songs[:-1]` returned `[]`; after the fix it correctly returns the single song.
 
 ---
 
