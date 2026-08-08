@@ -234,6 +234,8 @@ elif days_since_last == 1:
 
 Verified with `tmp_repro.py` — clock frozen at Sunday 2026-08-02, last listened Saturday 2026-08-01, streak started at 12. After the fix, streak correctly incremented to 13. The `days_since_last == 0` (same-day no-op) and `else` (gap reset) branches are structurally unchanged. No other code in the project calls `weekday()` on a date, so there are no side effects outside this function.
 
+Boundary cases: Saturday → Sunday was the broken case and is now fixed. All other consecutive-day transitions (e.g. Monday → Tuesday, Friday → Saturday) were never affected because `today.weekday() != 6` was only False on Sunday. The same-day branch (`days_since_last == 0`) and the gap/reset branch (`else`) do not reference `weekday()` at all and are unaffected by the change.
+
 ---
 
 ### Issue #3 — The same song keeps showing up twice in search
