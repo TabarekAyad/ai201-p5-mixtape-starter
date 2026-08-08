@@ -312,6 +312,8 @@ Output:
 
 One result, all 3 tags intact. `song.to_dict()` continues to load tags via the ORM relationship — `.distinct()` does not affect that. No other code paths call `search_songs` or touch the `song_tags` join in this service.
 
+Boundary cases: a song with 0 tags produces exactly one row even without `.distinct()` (no join expansion), so the no-tag case was never broken. A song with 1 tag also produced one row and was unaffected. The bug only manifested for songs with 2 or more tags, where the join expanded the row count to match the tag count. `.distinct()` collapses all of these back to one row regardless of tag count.
+
 ---
 
 ### Issue #5 — The last song in a playlist never shows up
