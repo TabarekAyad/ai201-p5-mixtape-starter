@@ -200,7 +200,8 @@ Starting state: streak=12, last_listened_at=2026-08-01
 After Sunday listen: streak=1  (expected 13)
 ```
 
-Bug confirmed: with the clock frozen at Sunday 2026-08-02, recording a listen after a Saturday sets the streak to 1 instead of 13.
+**Expected:** streak=13 — a listen on Sunday after a Saturday listen is a consecutive-day listen and should increment the streak by 1.  
+**Actual:** streak=1 — the Sunday listen fell through to the reset branch instead of the increment branch.
 
 **2. How I found the root cause**
 
